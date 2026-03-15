@@ -1,0 +1,16 @@
+# Rust
+/target/
+# Cargo.lock is intentionally committed for reproducible binary builds
+
+# Config files (user-specific, not committed)
+cs-flythrough.toml
+map-compatibility.toml
+
+# IDE
+.vscode/
+.idea/
+*.iml
+
+# Windows
+Thumbs.db
+desktop.ini
