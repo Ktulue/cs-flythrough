@@ -3,3 +3,4 @@ pub mod wad;
 pub mod parse;
 
 pub use parse::MeshData;
+pub use parse::load;
