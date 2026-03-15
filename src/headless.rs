@@ -69,14 +69,22 @@ async fn run_async(args: HeadlessArgs, cfg: Config) -> Result<()> {
 
     // Build Camera for spline modes (not needed for fixed-pose)
     let mut camera: Option<Camera> = if args.camera_pos.is_none() {
-        let nav_path = bsp_path.with_extension("nav");
-        let waypoints = if nav_path.exists() {
+        let waypoints = if let Some(nav_path) = maplist::resolve_nav(&cfg.cs_install_path, &map_name) {
             match bsp::nav::load_waypoints(&nav_path) {
-                Ok(pts) => pts,
-                Err(_) => cam_mod::nearest_neighbor_sort(entity_origins),
+                Ok(pts) => {
+                    eprintln!("[cs-flythrough] loaded {} NAV waypoints from {}", pts.len(), nav_path.display());
+                    let sorted = cam_mod::nearest_neighbor_sort(pts);
+                    let decimated = cam_mod::decimate_waypoints(sorted, 150.0);
+                    cam_mod::smooth_waypoints(decimated, 3)
+                }
+                Err(e) => {
+                    eprintln!("[cs-flythrough] NAV load failed ({e:#}), falling back to entity origins");
+                    cam_mod::smooth_waypoints(cam_mod::nearest_neighbor_sort(entity_origins), 3)
+                }
             }
         } else {
-            cam_mod::nearest_neighbor_sort(entity_origins)
+            eprintln!("[cs-flythrough] no NAV file found for '{map_name}', using entity origins");
+            cam_mod::smooth_waypoints(cam_mod::nearest_neighbor_sort(entity_origins), 3)
         };
         let n = waypoints.len();
         Some(

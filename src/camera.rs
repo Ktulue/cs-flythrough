@@ -49,7 +49,15 @@ impl Camera {
         self.t = (self.t + self.speed * delta_secs / (n * MAP_UNIT_SCALE)) % 1.0;
 
         let pos = catmull_rom_position(&self.waypoints, self.t);
-        let forward = catmull_rom_tangent(&self.waypoints, self.t).normalize_or_zero();
+        // Asymmetric pitch clamp: floor at +2°, ceiling at +12°.
+        // GoldSrc maps have void below the playable area. A small upward floor
+        // prevents floor-level ledges from exposing void at the bottom of the frame,
+        // and matches the screensaver aesthetic of looking slightly up into the map.
+        let raw = catmull_rom_tangent(&self.waypoints, self.t);
+        let len = raw.length();
+        let min_z =  3.0_f32.to_radians().sin() * len;  // floor: always look slightly up
+        let max_z = 12.0_f32.to_radians().sin() * len;  // ceiling: max upward
+        let forward = Vec3::new(raw.x, raw.y, raw.z.clamp(min_z, max_z)).normalize_or_zero();
 
         if self.first_update {
             self.first_update = false;
@@ -70,12 +78,68 @@ impl Camera {
     }
 }
 
+/// Remove waypoints that are closer than `min_dist` to the previous one.
+///
+/// Dense clusters of small NAV areas (doorways, corridors) produce tight Catmull-Rom
+/// hairpins that push the camera against wall geometry. Keeping only waypoints that are
+/// at least `min_dist` apart leaves the path in open areas of the map where the spline
+/// has room to interpolate cleanly.
+///
+/// The first waypoint is always kept. Returns all input points unchanged if every
+/// consecutive pair exceeds `min_dist` already.
+pub fn decimate_waypoints(pts: Vec<Vec3>, min_dist: f32) -> Vec<Vec3> {
+    let mut result: Vec<Vec3> = Vec::new();
+    for pt in pts {
+        if result.last().map_or(true, |last: &Vec3| last.distance(pt) >= min_dist) {
+            result.push(pt);
+        }
+    }
+    result
+}
+
+/// Smooth waypoints by iteratively averaging each point with its neighbors.
+///
+/// Each iteration replaces every waypoint with the weighted average of its predecessor,
+/// itself (weight 2), and its successor (weight 1 each), treating the list as a closed
+/// loop. Multiple iterations progressively round sharp corners.
+///
+/// Use after decimation so the path shape is stable before smoothing.
+pub fn smooth_waypoints(pts: Vec<Vec3>, iterations: u32) -> Vec<Vec3> {
+    let n = pts.len();
+    if n < 3 { return pts; }
+    let mut current = pts;
+    for _ in 0..iterations {
+        let mut smoothed = Vec::with_capacity(n);
+        for i in 0..n {
+            let prev = current[(i + n - 1) % n];
+            let curr = current[i];
+            let next = current[(i + 1) % n];
+            let avg = (prev + curr * 2.0 + next) / 4.0;
+            // Only smooth XY — averaging Z moves waypoints outside the map's navigable
+            // volume (e.g. entities at different heights pull neighbors into voids).
+            smoothed.push(Vec3::new(avg.x, avg.y, curr.z));
+        }
+        current = smoothed;
+    }
+    current
+}
+
 /// Sort waypoints using nearest-neighbor starting from index 0.
 /// Used by main.rs for entity-origin fallback paths.
 pub fn nearest_neighbor_sort(mut pts: Vec<Vec3>) -> Vec<Vec3> {
     if pts.is_empty() { return pts; }
+    // Start from the waypoint nearest to the centroid rather than index 0.
+    // Index 0 is often a map-edge point; the centroid is deep inside the playable
+    // volume surrounded by geometry on all sides.
+    let centroid = pts.iter().copied().fold(Vec3::ZERO, |a, p| a + p) / pts.len() as f32;
+    let start = pts.iter()
+        .enumerate()
+        .min_by(|(_, a), (_, b)| centroid.distance_squared(**a)
+            .partial_cmp(&centroid.distance_squared(**b)).unwrap())
+        .map(|(i, _)| i)
+        .unwrap_or(0);
     let mut sorted = Vec::with_capacity(pts.len());
-    sorted.push(pts.remove(0));
+    sorted.push(pts.remove(start));
     while !pts.is_empty() {
         let last = *sorted.last().unwrap();
         let nearest = pts.iter()
@@ -144,6 +208,56 @@ mod tests {
         assert!(Camera::new(vec![], 133.0, 2.0, 2.0).is_err());
         assert!(Camera::new(vec![Vec3::ZERO; 3], 133.0, 2.0, 2.0).is_err());
         assert!(Camera::new(four_square_pts(), 133.0, 2.0, 2.0).is_ok());
+    }
+
+    #[test]
+    fn test_smooth_waypoints_rounds_sharp_corner() {
+        // Sharp V-shape: A, B (far away), A's neighbor
+        let pts = vec![
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 1000.0, 0.0),  // far north
+            Vec3::new(1000.0, 0.0, 0.0),  // east, making a hairpin
+            Vec3::new(500.0, 0.0, 0.0),
+        ];
+        let smoothed = smooth_waypoints(pts.clone(), 5);
+        assert_eq!(smoothed.len(), pts.len());
+        // After smoothing, the far-north point should have moved closer to the centroid
+        assert!(smoothed[1].y < pts[1].y, "north point should have moved south after smoothing");
+    }
+
+    #[test]
+    fn test_smooth_waypoints_zero_iterations_unchanged() {
+        let pts = vec![
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(500.0, 0.0, 0.0),
+            Vec3::new(500.0, 500.0, 0.0),
+            Vec3::new(0.0, 500.0, 0.0),
+        ];
+        let result = smooth_waypoints(pts.clone(), 0);
+        assert_eq!(result, pts);
+    }
+
+    #[test]
+    fn test_decimate_waypoints_removes_close_points() {
+        let pts = vec![
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(50.0, 0.0, 0.0),   // 50 units — too close, removed
+            Vec3::new(200.0, 0.0, 0.0),  // 200 from first kept point — kept
+            Vec3::new(250.0, 0.0, 0.0),  // 50 from previous — removed
+            Vec3::new(500.0, 0.0, 0.0),  // 300 from last kept — kept
+        ];
+        let result = decimate_waypoints(pts, 150.0);
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0], Vec3::new(0.0, 0.0, 0.0));
+        assert_eq!(result[1], Vec3::new(200.0, 0.0, 0.0));
+        assert_eq!(result[2], Vec3::new(500.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn test_decimate_waypoints_keeps_all_when_spacing_large() {
+        let pts = four_square_pts(); // 1000 units apart
+        let result = decimate_waypoints(pts.clone(), 150.0);
+        assert_eq!(result.len(), pts.len());
     }
 
     #[test]

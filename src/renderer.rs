@@ -55,7 +55,14 @@ impl GpuCore {
                 depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    // Desert-sky blue: matches de_dust2's horizon colour and hides
+                    // BSP void (below-floor gaps) without a jarring black border.
+                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                        r: 0.47,
+                        g: 0.63,
+                        b: 0.78,
+                        a: 1.0,
+                    }),
                     store: wgpu::StoreOp::Store,
                 },
             })],
