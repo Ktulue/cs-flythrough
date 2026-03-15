@@ -100,8 +100,31 @@ mod tests {
 
     #[test]
     fn test_worldspawn_excluded() {
-        let pts = extract_waypoints(SAMPLE_LUMP).unwrap();
-        assert!(pts.iter().all(|p| *p != Vec3::ZERO || true)); // worldspawn has no origin in sample
+        // Even if worldspawn has an "origin" field, it must not appear in waypoints.
+        let lump = r#"
+{
+"classname" "worldspawn"
+"origin" "999 999 999"
+}
+{
+"classname" "info_player_start"
+"origin" "100 200 0"
+}
+{
+"classname" "info_player_start"
+"origin" "150 250 0"
+}
+{
+"classname" "info_player_deathmatch"
+"origin" "-100 -200 0"
+}
+{
+"classname" "func_bombsite"
+"origin" "400 400 0"
+}
+"#;
+        let pts = extract_waypoints(lump).unwrap();
+        assert!(!pts.contains(&Vec3::new(999.0, 999.0, 999.0)));
     }
 
     #[test]
