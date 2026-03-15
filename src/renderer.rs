@@ -228,7 +228,7 @@ impl ApplicationHandler for App {
 /// Windowed path passes surface_format from caps. Headless path passes Rgba8UnormSrgb.
 pub(crate) async fn init_gpu_core(
     adapter: &wgpu::Adapter,
-    mesh: MeshData,
+    mesh: &MeshData,
     output_format: wgpu::TextureFormat,
 ) -> Result<GpuCore> {
     let (device, queue) = adapter
@@ -472,7 +472,7 @@ async fn init_gpu(window: Arc<Window>, mesh: MeshData) -> Result<GpuState> {
     crate::diag!("[cs-flythrough] surface: {:?}  size: {}x{}", surface_format, config.width, config.height);
 
     // init_gpu_core creates the wgpu device internally — do NOT call request_device here.
-    let core = init_gpu_core(&adapter, mesh, surface_format).await?;
+    let core = init_gpu_core(&adapter, &mesh, surface_format).await?;
     // Configure the surface exactly once, using the device created by init_gpu_core.
     surface.configure(&core.device, &config);
 
