@@ -292,12 +292,15 @@ fn run_screensaver() -> Result<()> {
         }
     };
 
-    // Try NAV file for natural player-path waypoints; fall back to entity origins.
-    let waypoints = if let Some(nav_path) = maplist::resolve_nav(&cfg.cs_install_path, map_name) {
+    // Custom hand-designed route takes priority over NAV/entity-origin auto-path.
+    let waypoints = if let Some(route) = cfg.find_route(map_name) {
+        eprintln!("cs-flythrough: using {} custom waypoints for '{map_name}'", route.waypoints.len());
+        route.waypoints.iter().map(|&[x, y, z]| glam::Vec3::new(x, y, z)).collect()
+    } else if let Some(nav_path) = maplist::resolve_nav(&cfg.cs_install_path, map_name) {
+        // Try NAV file for natural player-path waypoints; fall back to entity origins.
         match bsp::nav::load_waypoints(&nav_path, 250.0, -64.0) {
             Ok(pts) => {
                 eprintln!("cs-flythrough: using {} NAV waypoints from {}", pts.len(), nav_path.display());
-                // Sort spatially, decimate to remove tight clusters, then smooth.
                 let sorted = camera::nearest_neighbor_sort(pts);
                 let decimated = camera::decimate_waypoints(sorted, 250.0);
                 camera::smooth_waypoints(decimated, 3)

@@ -69,11 +69,14 @@ async fn run_async(args: HeadlessArgs, cfg: Config) -> Result<()> {
 
     // Build Camera for spline modes (not needed for fixed-pose)
     let mut camera: Option<Camera> = if args.camera_pos.is_none() {
-        let waypoints = if let Some(nav_path) = maplist::resolve_nav(&cfg.cs_install_path, &map_name) {
+        let waypoints = if let Some(route) = cfg.find_route(&map_name) {
+            // Custom hand-designed route takes priority.
+            eprintln!("[cs-flythrough] using {} custom waypoints for '{map_name}'", route.waypoints.len());
+            route.waypoints.iter().map(|&[x, y, z]| glam::Vec3::new(x, y, z)).collect()
+        } else if let Some(nav_path) = maplist::resolve_nav(&cfg.cs_install_path, &map_name) {
             match bsp::nav::load_waypoints(&nav_path, 250.0, -64.0) {
                 Ok(pts) => {
                     eprintln!("[cs-flythrough] loaded {} NAV waypoints from {}", pts.len(), nav_path.display());
-                    // Sort spatially, decimate, then smooth.
                     let sorted = cam_mod::nearest_neighbor_sort(pts);
                     let decimated = cam_mod::decimate_waypoints(sorted, 250.0);
                     cam_mod::smooth_waypoints(decimated, 3)
