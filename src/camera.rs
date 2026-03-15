@@ -7,6 +7,16 @@ use std::time::Instant;
 /// distance for de_dust2 spawn/bombsite positions.
 const MAP_UNIT_SCALE: f32 = 256.0;
 
+/// Pose returned by Camera::update() each frame.
+pub struct CameraPose {
+    pub view: Mat4,
+    pub eye: Vec3,
+    /// Radians. atan2(forward.y, forward.x). JSON output should convert to degrees.
+    pub yaw: f32,
+    /// Radians. asin(forward.z.clamp(-1.0, 1.0)). JSON output should convert to degrees.
+    pub pitch: f32,
+}
+
 pub struct Camera {
     waypoints: Vec<Vec3>,  // in the order given (caller is responsible for ordering)
     t: f32,                // spline parameter, 0.0..1.0 over full loop
@@ -33,8 +43,8 @@ impl Camera {
         })
     }
 
-    /// Advance the spline parameter and return the view matrix.
-    pub fn update(&mut self, delta_secs: f32) -> Mat4 {
+    /// Advance the spline parameter and return a CameraPose.
+    pub fn update(&mut self, delta_secs: f32) -> CameraPose {
         let n = self.waypoints.len() as f32;
         self.t = (self.t + self.speed * delta_secs / (n * MAP_UNIT_SCALE)) % 1.0;
 
@@ -48,12 +58,15 @@ impl Camera {
         let elapsed = self.start_time.elapsed().as_secs_f32();
         let bob = self.bob_amplitude * (elapsed * self.bob_frequency * std::f32::consts::TAU).sin();
 
-        // Eye height: +64 units above waypoint Z, plus bob
         let eye = pos + Vec3::new(0.0, 0.0, 64.0 + bob);
         let target = eye + forward;
         let up = Vec3::Z;
 
-        Mat4::look_at_rh(eye, target, up)
+        let view = Mat4::look_at_rh(eye, target, up);
+        let yaw = forward.y.atan2(forward.x);
+        let pitch = forward.z.clamp(-1.0, 1.0).asin();
+
+        CameraPose { view, eye, yaw, pitch }
     }
 }
 
@@ -161,10 +174,26 @@ mod tests {
     }
 
     #[test]
-    fn test_update_returns_matrix() {
+    fn test_update_returns_pose_with_view() {
         let mut cam = Camera::new(four_square_pts(), 133.0, 2.0, 2.0).unwrap();
-        let mat = cam.update(0.016);
-        // Matrix should not be identity (camera is positioned)
-        assert_ne!(mat, Mat4::IDENTITY);
+        let pose = cam.update(0.016);
+        assert_ne!(pose.view, Mat4::IDENTITY);
+    }
+
+    #[test]
+    fn test_update_pose_eye_is_above_waypoint() {
+        // bob_amplitude=0 so no bob; eye should be exactly 64 units above waypoint Z
+        let mut cam = Camera::new(four_square_pts(), 133.0, 0.0, 0.0).unwrap();
+        let pose = cam.update(0.0);
+        assert!(pose.eye.z > 60.0, "eye z={} expected >60", pose.eye.z);
+    }
+
+    #[test]
+    fn test_update_pose_yaw_pitch_finite() {
+        let mut cam = Camera::new(four_square_pts(), 133.0, 2.0, 2.0).unwrap();
+        let pose = cam.update(0.016);
+        assert!(pose.yaw.is_finite());
+        assert!(pose.pitch.is_finite());
+        assert!(pose.pitch.abs() <= std::f32::consts::FRAC_PI_2 + 1e-5);
     }
 }
