@@ -157,6 +157,10 @@ pub fn nearest_neighbor_sort(mut pts: Vec<Vec3>) -> Vec<Vec3> {
 }
 
 /// Closed Catmull-Rom spline position at parameter t ∈ [0,1].
+/// Uses centripetal parameterisation (α=0.5) which is guaranteed not to produce
+/// cusps or self-intersections regardless of control-point spacing.  Uniform
+/// Catmull-Rom (α=0) overshoots when consecutive waypoints are unevenly spaced
+/// (as they are after decimation), pushing the camera into wall geometry.
 fn catmull_rom_position(pts: &[Vec3], t: f32) -> Vec3 {
     let n = pts.len();
     let scaled = t * n as f32;
@@ -168,7 +172,7 @@ fn catmull_rom_position(pts: &[Vec3], t: f32) -> Vec3 {
     let p2 = pts[(i + 1) % n];
     let p3 = pts[(i + 2) % n];
 
-    catmull_rom(p0, p1, p2, p3, local_t)
+    catmull_rom_centripetal(p0, p1, p2, p3, local_t)
 }
 
 /// Closed Catmull-Rom tangent at parameter t ∈ [0,1] (for forward direction).
@@ -179,15 +183,39 @@ fn catmull_rom_tangent(pts: &[Vec3], t: f32) -> Vec3 {
     (catmull_rom_position(pts, t1) - catmull_rom_position(pts, t0)) / (2.0 * epsilon)
 }
 
-fn catmull_rom(p0: Vec3, p1: Vec3, p2: Vec3, p3: Vec3, t: f32) -> Vec3 {
-    let t2 = t * t;
-    let t3 = t2 * t;
-    0.5 * (
-        (2.0 * p1)
-        + (-p0 + p2) * t
-        + (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * t2
-        + (-p0 + 3.0 * p1 - 3.0 * p2 + p3) * t3
-    )
+/// Centripetal Catmull-Rom interpolation between p1 and p2, with p0/p3 as outer
+/// control points.  α=0.5 produces the centripetal variant.
+///
+/// The parameterisation knots are:  t0=0, t1=|p1−p0|^α, t2=t1+|p2−p1|^α,
+/// t3=t2+|p3−p2|^α.  local_t ∈ [0,1] is remapped into [t1,t2] before evaluating.
+/// Coincident control points (zero chord length) fall back to linear interpolation
+/// to avoid division-by-zero.
+fn catmull_rom_centripetal(p0: Vec3, p1: Vec3, p2: Vec3, p3: Vec3, local_t: f32) -> Vec3 {
+    const ALPHA: f32 = 0.5;
+    let t0 = 0.0_f32;
+    let t1 = t0 + p0.distance(p1).powf(ALPHA);
+    let t2 = t1 + p1.distance(p2).powf(ALPHA);
+    let t3 = t2 + p2.distance(p3).powf(ALPHA);
+
+    // Guard: degenerate segment (duplicate waypoints after decimation)
+    if (t2 - t1).abs() < 1e-6 {
+        return p1.lerp(p2, local_t);
+    }
+
+    let t = t1 + local_t * (t2 - t1);
+
+    let safe_lerp = |ta: f32, tb: f32, a: Vec3, b: Vec3| -> Vec3 {
+        let d = tb - ta;
+        if d.abs() < 1e-6 { return a.lerp(b, 0.5); }
+        a * ((tb - t) / d) + b * ((t - ta) / d)
+    };
+
+    let a1 = safe_lerp(t0, t1, p0, p1);
+    let a2 = safe_lerp(t1, t2, p1, p2);
+    let a3 = safe_lerp(t2, t3, p2, p3);
+    let b1 = safe_lerp(t0, t2, a1, a2);
+    let b2 = safe_lerp(t1, t3, a2, a3);
+    safe_lerp(t1, t2, b1, b2)
 }
 
 #[cfg(test)]

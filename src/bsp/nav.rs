@@ -107,7 +107,17 @@ fn dfs_order(areas: &[(Vec3, Vec<usize>)]) -> Vec<Vec3> {
 /// - `center_x = (nw_x + se_x) / 2`
 /// - `center_y = (nw_y + se_y) / 2`
 /// - `center_z = (nw_z + se_z + ne_z + sw_z) / 4`
-pub fn load_waypoints(nav_path: &Path) -> Result<Vec<Vec3>> {
+///
+/// `min_extent` filters out NAV areas whose narrower XY dimension is below the
+/// threshold.  Tight areas (doorways, spawn boxes, corridor ends) have their
+/// centers close to wall surfaces, which places the camera immediately against
+/// a wall.  Pass `0.0` to include all areas.
+///
+/// Areas whose average Z floor is below `min_z` are also excluded.  Water
+/// volumes and sub-floor navigation areas have very negative Z values and
+/// produce camera positions below the visible geometry.  Typical GoldSrc
+/// playable floors are above Z = -200; pass `f32::NEG_INFINITY` to disable.
+pub fn load_waypoints(nav_path: &Path, min_extent: f32, min_z: f32) -> Result<Vec<Vec3>> {
     let data = std::fs::read(nav_path)
         .with_context(|| format!("failed to read NAV file: {}", nav_path.display()))?;
 
@@ -208,6 +218,11 @@ pub fn load_waypoints(nav_path: &Path) -> Result<Vec<Vec3>> {
             (nw_z + se_z + ne_z + sw_z) / 4.0,
         );
 
+        // Minimum XY dimension: area center is this many units from the nearest
+        // axis-aligned wall.  Doorways and spawn boxes are typically 64-96 units;
+        // open corridors and plazas are 128+ units.
+        let extent = (se_x - nw_x).abs().min((se_y - nw_y).abs());
+
         // --- Connections: 4 directions ---
         let mut connections = Vec::new();
         for _dir in 0..4u32 {
@@ -222,7 +237,9 @@ pub fn load_waypoints(nav_path: &Path) -> Result<Vec<Vec3>> {
             }
         }
 
-        raw_areas.push(NavArea { id, center, connections });
+        if extent >= min_extent && center.z >= min_z {
+            raw_areas.push(NavArea { id, center, connections });
+        }
 
         // --- Hiding spots (version >= 2) ---
         let hiding_count = c
@@ -379,7 +396,7 @@ mod tests {
 
         let bytes = make_nav_bytes(6, &areas);
         let tmp = write_temp_nav(&bytes);
-        let waypoints = load_waypoints(tmp.path()).expect("should parse");
+        let waypoints = load_waypoints(tmp.path(), 0.0, f32::NEG_INFINITY).expect("should parse");
 
         assert_eq!(waypoints.len(), 4);
 
@@ -410,7 +427,7 @@ mod tests {
 
         let bytes = make_nav_bytes(6, &areas);
         let tmp = write_temp_nav(&bytes);
-        let result = load_waypoints(tmp.path());
+        let result = load_waypoints(tmp.path(), 0.0, f32::NEG_INFINITY);
 
         assert!(result.is_err(), "expected Err for 3 areas");
         let msg = format!("{:#}", result.unwrap_err());
@@ -430,7 +447,7 @@ mod tests {
         bytes[3] = 0xEF;
 
         let tmp = write_temp_nav(&bytes);
-        let result = load_waypoints(tmp.path());
+        let result = load_waypoints(tmp.path(), 0.0, f32::NEG_INFINITY);
         assert!(result.is_err(), "expected Err for bad magic");
         let msg = format!("{:#}", result.unwrap_err());
         assert!(msg.contains("magic"), "error should mention magic: {msg}");
@@ -448,7 +465,7 @@ mod tests {
 
         let bytes = make_nav_bytes(6, &areas);
         let tmp = write_temp_nav(&bytes);
-        let waypoints = load_waypoints(tmp.path()).expect("should parse");
+        let waypoints = load_waypoints(tmp.path(), 0.0, f32::NEG_INFINITY).expect("should parse");
 
         // Area 0: nw_z=0, se_z=4, ne_z=8, sw_z=12 → average = (0+4+8+12)/4 = 6
         assert!(
@@ -510,7 +527,7 @@ mod tests {
         }
 
         let tmp = write_temp_nav(&buf);
-        let waypoints = load_waypoints(tmp.path())
+        let waypoints = load_waypoints(tmp.path(), 0.0, f32::NEG_INFINITY)
             .expect("should parse when hiding/approach spots are correctly sized");
         assert_eq!(waypoints.len(), 4, "all 4 areas should be parsed");
         // Area 0 center should be (50, 50, 0)

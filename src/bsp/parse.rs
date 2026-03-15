@@ -16,16 +16,18 @@ use qbsp::{
 
 use crate::bsp::wad::load_textures;
 
-/// GPU vertex — 32 bytes stride, 3 attributes:
-/// @location(0): position [f32; 3] — world-space XYZ
-/// @location(1): diffuse_uv [f32; 2] — UV into diffuse atlas
-/// @location(2): lightmap_uv [f32; 2] — UV into lightmap atlas
+/// GPU vertex — 44 bytes stride, 4 attributes:
+/// @location(0): position [f32; 3]          — world-space XYZ
+/// @location(1): diffuse_uv [f32; 2]        — raw normalized UV (may be outside [0,1]; tiling done in shader)
+/// @location(2): lightmap_uv [f32; 2]       — UV into lightmap atlas (already normalized by qbsp)
+/// @location(3): diffuse_atlas_rect [f32; 4] — [u_min, v_min, u_max, v_max] of this face's texture in the diffuse atlas
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Vertex {
     pub position: [f32; 3],
     pub diffuse_uv: [f32; 2],
     pub lightmap_uv: [f32; 2],
+    pub diffuse_atlas_rect: [f32; 4],
 }
 
 pub struct MeshData {
@@ -260,7 +262,10 @@ pub fn load(bsp_path: &Path, cs_install_path: &Path) -> Result<MeshData> {
     // ── 6. Compute lightmap atlas ────────────────────────────────────────────
     let lm_settings = ComputeLightmapSettings {
         default_color: [0; 3],
-        no_lighting_color: [0; 3],
+        // Faces with the no-lighting flag render at full brightness (just diffuse texture).
+        // Value 255 in the sRGB lightmap atlas decodes to linear 1.0 in the shader, and
+        // 1.0 * 4.0 + 0.05 > 1.0, so clamp gives full-bright output.
+        no_lighting_color: [255; 3],
         special_lighting_color: [255; 3],
         max_width: 2048,
         max_height: u32::MAX,
@@ -272,7 +277,7 @@ pub fn load(bsp_path: &Path, cs_install_path: &Path) -> Result<MeshData> {
         .compute_lightmap_atlas(PerStyleLightmapPacker::new(lm_settings))
         .ok();
 
-    let (lightmap_atlas, lightmap_uv_map): (RgbaImage, LightmapUvMap) = match lm_result {
+    let (mut lightmap_atlas, lightmap_uv_map): (RgbaImage, LightmapUvMap) = match lm_result {
         Some(output) => {
             let atlas = style_data_to_rgba(&output.data);
             (atlas, output.uvs)
@@ -284,6 +289,12 @@ pub fn load(bsp_path: &Path, cs_install_path: &Path) -> Result<MeshData> {
             (img, LightmapUvMap::new())
         }
     };
+    // Reserve pixel (0,0) as a full-bright sentinel. Faces with no lightmap UV
+    // (e.g. faces qbsp didn't emit lightmap data for) point their verts at UV
+    // (0.5/w, 0.5/h), which samples pixel (0,0). Writing 255 here guarantees
+    // those faces render at full diffuse brightness rather than sampling a random
+    // real face's lightmap texel.
+    lightmap_atlas.put_pixel(0, 0, image::Rgba([255, 255, 255, 255]));
 
     let lm_atlas_w = lightmap_atlas.width() as f32;
     let lm_atlas_h = lightmap_atlas.height() as f32;
@@ -354,7 +365,8 @@ pub fn load(bsp_path: &Path, cs_install_path: &Path) -> Result<MeshData> {
         let lm_uvs: Vec<[f32; 2]> = if let Some(face_lm_uvs) = lightmap_uv_map.get(&face_idx) {
             face_lm_uvs.iter().map(|uv| [uv.x, uv.y]).collect()
         } else {
-            // No lightmap for this face; point all verts at centre of atlas (white pixel).
+            // No lightmap for this face; point all verts at pixel (0,0) of the atlas,
+            // which is reserved as a full-bright sentinel (see above).
             vec![[0.5 / lm_atlas_w, 0.5 / lm_atlas_h]; face.num_edges.0 as usize]
         };
 
@@ -373,12 +385,12 @@ pub fn load(bsp_path: &Path, cs_install_path: &Path) -> Result<MeshData> {
         for (vi, qbsp_pos) in face_verts.iter().enumerate() {
             // Project vertex onto the texture plane to get texture-space UVs.
             let raw_uv = tex_info.projection.project(*qbsp_pos);
-            // Normalize from texture-space to 0..1, then wrap.
-            let u_norm = (raw_uv.x / tex_w).rem_euclid(1.0);
-            let v_norm = (raw_uv.y / tex_h).rem_euclid(1.0);
-            // Remap into the atlas UV rect.
-            let u_atlas = uv_rect[0] + u_norm * (uv_rect[2] - uv_rect[0]);
-            let v_atlas = uv_rect[1] + v_norm * (uv_rect[3] - uv_rect[1]);
+            // Normalize from texture-space to raw UV (may be outside [0,1]).
+            // Wrapping is deferred to the fragment shader to avoid interpolation seams at
+            // tile boundaries (per-vertex rem_euclid causes adjacent verts with UVs on
+            // opposite sides of a wrap boundary to interpolate backwards across the texture).
+            let u_raw = raw_uv.x / tex_w;
+            let v_raw = raw_uv.y / tex_h;
 
             // Lightmap UV (already atlas-normalized from qbsp).
             let lm_uv = lm_uvs.get(vi).copied().unwrap_or([0.0, 0.0]);
@@ -386,8 +398,9 @@ pub fn load(bsp_path: &Path, cs_install_path: &Path) -> Result<MeshData> {
             // Convert position from qbsp's glam 0.30 Vec3 to [f32; 3].
             target_verts.push(Vertex {
                 position: [qbsp_pos.x, qbsp_pos.y, qbsp_pos.z],
-                diffuse_uv: [u_atlas, v_atlas],
+                diffuse_uv: [u_raw, v_raw],
                 lightmap_uv: lm_uv,
+                diffuse_atlas_rect: uv_rect,
             });
         }
 

@@ -294,13 +294,12 @@ fn run_screensaver() -> Result<()> {
 
     // Try NAV file for natural player-path waypoints; fall back to entity origins.
     let waypoints = if let Some(nav_path) = maplist::resolve_nav(&cfg.cs_install_path, map_name) {
-        match bsp::nav::load_waypoints(&nav_path) {
+        match bsp::nav::load_waypoints(&nav_path, 250.0, -64.0) {
             Ok(pts) => {
                 eprintln!("cs-flythrough: using {} NAV waypoints from {}", pts.len(), nav_path.display());
-                // Sort spatially, decimate to remove tight clusters, then smooth to
-                // round the remaining sharp corners into gentle Catmull-Rom-friendly curves.
+                // Sort spatially, decimate to remove tight clusters, then smooth.
                 let sorted = camera::nearest_neighbor_sort(pts);
-                let decimated = camera::decimate_waypoints(sorted, 150.0);
+                let decimated = camera::decimate_waypoints(sorted, 250.0);
                 camera::smooth_waypoints(decimated, 3)
             }
             Err(e) => {
