@@ -8,6 +8,7 @@ mod camera;
 mod renderer;
 mod input;
 pub mod log;
+mod capture;
 
 fn main() {
     // Initialize log file next to the exe so double-click runs produce readable output.
