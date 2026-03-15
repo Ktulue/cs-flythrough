@@ -135,7 +135,7 @@ impl ApplicationHandler for App {
                 let delta_secs = (now - self.last_frame).as_secs_f32().min(0.1);
                 self.last_frame = now;
 
-                let view = self.camera.update(delta_secs);
+                let pose = self.camera.update(delta_secs);
                 let aspect = gpu.config.width as f32 / gpu.config.height as f32;
                 // CS 1.6 uses 90° horizontal FOV. perspective_rh takes vertical FOV,
                 // so derive fov_y from fov_x: fov_y = 2 * atan(tan(fov_x/2) / aspect).
@@ -143,7 +143,7 @@ impl ApplicationHandler for App {
                 // glam 0.32 perspective_rh outputs depth [0,1] (wgpu/Vulkan convention).
                 let fov_y = 2.0 * (1.0_f32 / aspect).atan();
                 let proj = Mat4::perspective_rh(fov_y, aspect, 4.0, 4096.0);
-                let vp: [[f32; 4]; 4] = (proj * view).to_cols_array_2d();
+                let vp: [[f32; 4]; 4] = (proj * pose.view).to_cols_array_2d();
                 gpu.queue
                     .write_buffer(&gpu.vp_buf, 0, bytemuck::cast_slice(&vp));
 
