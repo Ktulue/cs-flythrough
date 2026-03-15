@@ -7,6 +7,10 @@ edition = "2021"
 name = "cs-flythrough"
 path = "src/main.rs"
 
+[lib]
+name = "cs_flythrough"
+path = "src/lib.rs"
+
 [dependencies]
 wgpu = { version = "28", features = ["dx12", "vulkan"] }
 winit = "0.30"
