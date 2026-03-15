@@ -293,21 +293,24 @@ fn run_screensaver() -> Result<()> {
     };
 
     // Try NAV file for natural player-path waypoints; fall back to entity origins.
-    let nav_path = bsp_path.with_extension("nav");
-    let waypoints = if nav_path.exists() {
+    let waypoints = if let Some(nav_path) = maplist::resolve_nav(&cfg.cs_install_path, map_name) {
         match bsp::nav::load_waypoints(&nav_path) {
             Ok(pts) => {
                 eprintln!("cs-flythrough: using {} NAV waypoints from {}", pts.len(), nav_path.display());
-                pts  // already DFS-ordered
+                // Sort spatially, decimate to remove tight clusters, then smooth to
+                // round the remaining sharp corners into gentle Catmull-Rom-friendly curves.
+                let sorted = camera::nearest_neighbor_sort(pts);
+                let decimated = camera::decimate_waypoints(sorted, 150.0);
+                camera::smooth_waypoints(decimated, 3)
             }
             Err(e) => {
                 eprintln!("cs-flythrough: NAV load failed ({e:#}), falling back to entity origins");
-                camera::nearest_neighbor_sort(mesh.entity_origins.clone())
+                camera::smooth_waypoints(camera::nearest_neighbor_sort(mesh.entity_origins.clone()), 3)
             }
         }
     } else {
-        eprintln!("cs-flythrough: no NAV file at {}, using entity origins", nav_path.display());
-        camera::nearest_neighbor_sort(mesh.entity_origins.clone())
+        eprintln!("cs-flythrough: no NAV file found for '{map_name}', using entity origins");
+        camera::smooth_waypoints(camera::nearest_neighbor_sort(mesh.entity_origins.clone()), 3)
     };
 
     let cam = camera::Camera::new(

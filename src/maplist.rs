@@ -66,6 +66,44 @@ pub fn resolve_bsp(cs_install_path: &Path, map_name: &str) -> Result<PathBuf> {
         .with_context(|| format!("BSP not found for map '{map_name}' in {}", cs_install_path.display()))
 }
 
+/// Resolve a NAV file for the given map name.
+///
+/// NAV files are not always co-located with BSP files. Steam ships a single `cstrike`
+/// directory without NAV files, while the same map's NAV lives in `czero` which may be
+/// a sibling Steam install (e.g. "Half-Life 80" next to "Half-Life"). This function
+/// tries the configured path first, then scans sibling directories in the Steam
+/// common folder so users don't need to configure both paths.
+pub fn resolve_nav(cs_install_path: &Path, map_name: &str) -> Option<PathBuf> {
+    let nav_name = format!("{map_name}.nav");
+
+    // 1. Direct candidates under cs_install_path.
+    for sub in &["cstrike", "czero"] {
+        let p = cs_install_path.join(sub).join("maps").join(&nav_name);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+
+    // 2. Scan sibling directories of cs_install_path (handles "Half-Life 80" next to
+    //    "Half-Life", which is how Steam ships CS 1.6 + Condition Zero on some depots).
+    if let Some(parent) = cs_install_path.parent() {
+        if let Ok(entries) = std::fs::read_dir(parent) {
+            for entry in entries.flatten() {
+                let sibling = entry.path();
+                if sibling == cs_install_path { continue; }
+                for sub in &["cstrike", "czero"] {
+                    let p = sibling.join(sub).join("maps").join(&nav_name);
+                    if p.exists() {
+                        return Some(p);
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -118,16 +118,6 @@ pub fn load_textures(
         }
     }
 
-    // Magenta fallback for textures not found in any WAD.
-    const FALLBACK_SIZE: u32 = 16;
-    let magenta_pixels: Vec<u8> = {
-        let px_count = (FALLBACK_SIZE * FALLBACK_SIZE) as usize;
-        let mut v = Vec::with_capacity(px_count * 4);
-        for _ in 0..px_count {
-            v.extend_from_slice(&[255u8, 0u8, 255u8, 255u8]);
-        }
-        v
-    };
 
     // Deduplicate names while preserving order.
     let unique_names: Vec<&String> = {
@@ -145,10 +135,15 @@ pub fn load_textures(
 
     for name in unique_names {
         let key = name.to_lowercase();
-        let (pixels, width, height) = all_textures
+        let Some((pixels, width, height)) = all_textures
             .get(&key)
             .map(|(p, w, h)| (p.as_slice(), *w, *h))
-            .unwrap_or_else(|| (magenta_pixels.as_slice(), FALLBACK_SIZE, FALLBACK_SIZE));
+        else {
+            // Texture not found in any WAD — skip it entirely. The face-loop in
+            // parse.rs will hit `None => continue` for these faces.
+            crate::diag!("[cs-flythrough] texture not in WAD, skipping: '{name}'");
+            continue;
+        };
 
         let alloc = match allocator.allocate(size2(width as i32, height as i32)) {
             Some(a) => a,

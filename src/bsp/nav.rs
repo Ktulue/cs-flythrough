@@ -132,6 +132,26 @@ pub fn load_waypoints(nav_path: &Path) -> Result<Vec<Vec3>> {
         ));
     }
 
+    // NAV v5 (Counter-Strike: Condition Zero / early CS 1.6) adds two sections
+    // between the version and the area count that v6 does not have:
+    //   1. bsp_size (u32): the BSP file size, used for validation at load time.
+    //   2. place directory: u16 place_count, then for each place a u16 name_length
+    //      followed by name_length bytes of the place name (null-terminated).
+    // v6 (standard CS 1.6) omits these: area_count immediately follows version.
+    if version == 5 {
+        // Skip bsp_size validation field.
+        c.skip(4).context("v5: skipping bsp_size")?;
+
+        // Skip place name directory.
+        let place_count = c.read_u16_le().context("v5: reading place_count")?;
+        for pi in 0..place_count {
+            let name_len = c.read_u16_le()
+                .with_context(|| format!("v5: place {pi}: reading name_len"))?;
+            c.skip(name_len as usize)
+                .with_context(|| format!("v5: place {pi}: skipping {name_len} name bytes"))?;
+        }
+    }
+
     let area_count = c.read_u32_le().context("reading area count")?;
 
     let mut raw_areas: Vec<NavArea> = Vec::with_capacity(area_count as usize);
@@ -141,10 +161,13 @@ pub fn load_waypoints(nav_path: &Path) -> Result<Vec<Vec3>> {
             .read_u32_le()
             .with_context(|| format!("area {area_idx}: reading id"))?;
 
-        // flags present for version >= 2 (we already checked version >= 2 above)
-        let _flags = c
-            .read_u32_le()
-            .with_context(|| format!("area {area_idx}: reading flags"))?;
+        // flags field: u8 in NAV v5, u32 in v6+.
+        // (v5 = CS:CZ shipped format; v6 = standard CS 1.6 format)
+        if version == 5 {
+            c.read_u8().with_context(|| format!("area {area_idx}: reading flags (v5 u8)"))?;
+        } else {
+            c.read_u32_le().with_context(|| format!("area {area_idx}: reading flags (v6+ u32)"))?;
+        }
 
         // NW corner XYZ
         let nw_x = c
@@ -205,16 +228,16 @@ pub fn load_waypoints(nav_path: &Path) -> Result<Vec<Vec3>> {
         let hiding_count = c
             .read_u8()
             .with_context(|| format!("area {area_idx}: hiding_count"))?;
-        // Each hiding spot: position[3*f32] + flags(u8) = 13 bytes
-        c.skip(hiding_count as usize * 13)
+        // Each hiding spot: id(u32) + position[3*f32] + flags(u8) = 17 bytes
+        c.skip(hiding_count as usize * 17)
             .with_context(|| format!("area {area_idx}: skipping {hiding_count} hiding spots"))?;
 
         // --- Approach spots (version < 15; CS 1.6 v6 always has these) ---
         let approach_count = c
             .read_u8()
             .with_context(|| format!("area {area_idx}: approach_count"))?;
-        // Each approach spot: from_id(u32) + prev_id(u32) + how(u8) + dummy(u8) = 10 bytes
-        c.skip(approach_count as usize * 10)
+        // Each approach spot: from_id(u32) + prev_id(u32) + how(u8) + next_id(u32) + how2(u8) = 14 bytes
+        c.skip(approach_count as usize * 14)
             .with_context(|| {
                 format!("area {area_idx}: skipping {approach_count} approach spots")
             })?;
@@ -249,6 +272,7 @@ pub fn load_waypoints(nav_path: &Path) -> Result<Vec<Vec3>> {
         let _place_id = c
             .read_u16_le()
             .with_context(|| format!("area {area_idx}: place_id"))?;
+
     }
 
     // Build id→index map and resolve connection IDs to array indices.
@@ -297,8 +321,12 @@ mod tests {
         for (idx, (nw, se, ne_z, sw_z)) in areas.iter().enumerate() {
             // id
             buf.extend_from_slice(&(idx as u32 + 1).to_le_bytes());
-            // flags (version >= 2)
-            buf.extend_from_slice(&0u32.to_le_bytes());
+            // flags: u8 for v5, u32 for v6+
+            if version == 5 {
+                buf.push(0u8);
+            } else {
+                buf.extend_from_slice(&0u32.to_le_bytes());
+            }
             // nw corner
             for &v in nw.iter() {
                 buf.extend_from_slice(&v.to_le_bytes());
@@ -428,5 +456,64 @@ mod tests {
             "z average wrong: {}",
             waypoints[0].z
         );
+    }
+
+    /// Parser must skip hiding spots (17 bytes each: id+pos+flags) and approach spots
+    /// (14 bytes each: from+prev+how+next+how2) without desyncing.
+    /// Regression test for the 13-byte and 10-byte size bugs.
+    #[test]
+    fn test_hiding_and_approach_spots_skipped_correctly() {
+        let areas = [
+            ([0.0f32, 0.0, 0.0], [100.0f32, 100.0, 0.0], 0.0f32, 0.0f32),
+            ([200.0, 0.0, 0.0], [300.0, 100.0, 0.0], 0.0, 0.0),
+            ([0.0, 200.0, 0.0], [100.0, 300.0, 0.0], 0.0, 0.0),
+            ([200.0, 200.0, 0.0], [300.0, 300.0, 0.0], 0.0, 0.0),
+        ];
+
+        // Build v6 NAV bytes manually with non-zero hiding/approach counts in area 0.
+        let mut buf: Vec<u8> = Vec::new();
+        buf.extend_from_slice(&NAV_MAGIC.to_le_bytes());
+        buf.extend_from_slice(&6u32.to_le_bytes()); // version 6
+        buf.extend_from_slice(&(areas.len() as u32).to_le_bytes());
+
+        for (idx, (nw, se, ne_z, sw_z)) in areas.iter().enumerate() {
+            buf.extend_from_slice(&(idx as u32 + 1).to_le_bytes()); // id
+            buf.extend_from_slice(&0u32.to_le_bytes()); // flags (u32 for v6)
+            for &v in nw { buf.extend_from_slice(&v.to_le_bytes()); }
+            for &v in se { buf.extend_from_slice(&v.to_le_bytes()); }
+            buf.extend_from_slice(&ne_z.to_le_bytes());
+            buf.extend_from_slice(&sw_z.to_le_bytes());
+            for _ in 0..4u32 { buf.extend_from_slice(&0u32.to_le_bytes()); } // 0 connections per dir
+
+            if idx == 0 {
+                // 2 hiding spots × 17 bytes each
+                buf.push(2u8);
+                for spot_id in [101u32, 102u32] {
+                    buf.extend_from_slice(&spot_id.to_le_bytes()); // id (4 bytes)
+                    for _ in 0..3 { buf.extend_from_slice(&0.0f32.to_le_bytes()); } // pos
+                    buf.push(0x01u8); // flags
+                }
+                // 1 approach spot × 14 bytes
+                buf.push(1u8);
+                buf.extend_from_slice(&2u32.to_le_bytes()); // from_id
+                buf.extend_from_slice(&3u32.to_le_bytes()); // prev_id
+                buf.push(0u8); // how
+                buf.extend_from_slice(&4u32.to_le_bytes()); // next_id
+                buf.push(0u8); // how2
+            } else {
+                buf.push(0u8); // hiding_count = 0
+                buf.push(0u8); // approach_count = 0
+            }
+
+            buf.extend_from_slice(&0u32.to_le_bytes()); // path_count = 0
+            buf.extend_from_slice(&0u16.to_le_bytes()); // place_id = 0
+        }
+
+        let tmp = write_temp_nav(&buf);
+        let waypoints = load_waypoints(tmp.path())
+            .expect("should parse when hiding/approach spots are correctly sized");
+        assert_eq!(waypoints.len(), 4, "all 4 areas should be parsed");
+        // Area 0 center should be (50, 50, 0)
+        assert!((waypoints[0].x - 50.0).abs() < 1e-5, "area0 x after skip");
     }
 }

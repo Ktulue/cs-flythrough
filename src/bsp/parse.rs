@@ -237,11 +237,20 @@ pub fn load(bsp_path: &Path, cs_install_path: &Path) -> Result<MeshData> {
     };
 
     // ── 4. Collect texture names from BSP texture lump ───────────────────────
+    // Filter out special-purpose GoldSrc textures that should never be rendered.
+    // Loading them into the atlas causes their face pixels to show (aaatrigger is
+    // literally a bright pink texture in the WADs). Excluding them here ensures the
+    // atlas UV lookup returns None for those faces, and the face loop skips them.
+    const NODRAW_NAMES: &[&str] = &[
+        "aaatrigger", "trigger", "clip", "null",
+        "hint", "skip", "nodraw",
+    ];
     let texture_names: Vec<String> = bsp
         .textures
         .iter()
         .flatten()
         .map(|t| t.header.name.as_str().to_lowercase())
+        .filter(|n| !NODRAW_NAMES.contains(&n.as_str()))
         .collect();
 
     // ── 5. Build diffuse atlas ───────────────────────────────────────────────
@@ -307,14 +316,28 @@ pub fn load(bsp_path: &Path, cs_install_path: &Path) -> Result<MeshData> {
             .map(|n| n.as_str().to_lowercase())
             .unwrap_or_default();
 
-        // Diffuse UV rect from atlas [u_min, v_min, u_max, v_max].
-        // If texture not found in atlas, use a fallback rect (0..1) which maps to
-        // the magenta fallback region — wad.rs guarantees every texture gets an entry.
-        let uv_rect = diffuse_atlas
-            .uvs
-            .get(&tex_name)
-            .copied()
-            .unwrap_or([0.0, 0.0, 1.0, 1.0]);
+        // Skip invisible / special-purpose GoldSrc textures. These are real textures
+        // present in the WADs (so they DO land in the atlas), but they exist only as
+        // BSP-space markers: trigger volumes, player-clip planes, BSP hint/skip faces.
+        // Rendering them produces garish magenta or electric-blue rectangles floating
+        // in the playable space — skip them entirely.
+        const NODRAW: &[&str] = &[
+            "aaatrigger", "trigger", "clip", "null",
+            "hint", "skip", "nodraw",
+        ];
+        if NODRAW.iter().any(|&n| tex_name == n) {
+            continue;
+        }
+
+        // Diffuse UV rect from atlas. If the texture is not in the atlas (trigger
+        // volumes, clip brushes, hint/skip faces — textures that exist only as BSP
+        // names but have no pixels in any WAD), skip the face entirely rather than
+        // rendering it with the magenta fallback. This eliminates the bright pink
+        // rectangles that appear for func_bombsite zones, clip planes, etc.
+        let uv_rect = match diffuse_atlas.uvs.get(&tex_name).copied() {
+            Some(r) => r,
+            None => continue,
+        };
 
         // Texture dimensions for UV normalization.
         // qbsp's projection.project() returns world-space (texture-space) UVs,
