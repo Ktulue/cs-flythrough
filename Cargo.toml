@@ -1,0 +1,26 @@
+[package]
+name = "cs-flythrough"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "cs-flythrough"
+path = "src/main.rs"
+
+[dependencies]
+wgpu = { version = "28", features = ["dx12", "vulkan"] }
+winit = "0.30"
+glam = "0.32"
+anyhow = "1"
+toml = "0.8"
+serde = { version = "1", features = ["derive"] }
+image = "0.25"
+guillotiere = "0.6"
+goldsrc-rs = { git = "https://github.com/r4v3n6101/goldsrc-rs", rev = "734d447424f41d6df7f255677e02515a36dbc6c6" }
+qbsp = "0.14"
+
+[dev-dependencies]
+# none yet
+
+[profile.release]
+opt-level = 3
