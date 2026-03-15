@@ -115,7 +115,11 @@ impl ApplicationHandler for App {
 
                 let view = self.camera.update(delta_secs);
                 let aspect = gpu.config.width as f32 / gpu.config.height as f32;
-                let proj = Mat4::perspective_rh(90_f32.to_radians(), aspect, 4.0, 4096.0);
+                // CS 1.6 uses 90° horizontal FOV. perspective_rh takes vertical FOV,
+                // so derive fov_y from fov_x: fov_y = 2 * atan(tan(fov_x/2) / aspect).
+                // tan(90°/2) = tan(45°) = 1.0, simplifying to: fov_y = 2 * atan(1/aspect).
+                let fov_y = 2.0 * (1.0_f32 / aspect).atan();
+                let proj = Mat4::perspective_rh(fov_y, aspect, 4.0, 4096.0);
                 let vp: [[f32; 4]; 4] = (proj * view).to_cols_array_2d();
                 gpu.queue
                     .write_buffer(&gpu.vp_buf, 0, bytemuck::cast_slice(&vp));
@@ -164,12 +168,14 @@ impl ApplicationHandler for App {
                         wgpu::IndexFormat::Uint32,
                     );
 
-                    // Geometry pass
+                    // Geometry pass (diffuse × lightmap)
                     rpass.set_pipeline(&gpu.geo_pipeline);
                     rpass.set_bind_group(0, &gpu.geo_bind_group, &[]);
                     rpass.draw_indexed(0..gpu.geo_index_count, 0, 0..1);
 
-                    // Sky pass
+                    // Sky pass (flat color) — encoded in the same wgpu render pass as geometry.
+                    // BSP sky faces are at the map boundary and don't overlap interior geometry,
+                    // so sharing a depth buffer with geometry is correct and depth-fight-free.
                     rpass.set_pipeline(&gpu.sky_pipeline);
                     rpass.set_bind_group(0, &gpu.sky_bind_group, &[]);
                     rpass.draw_indexed(
