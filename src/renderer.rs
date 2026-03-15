@@ -280,9 +280,10 @@ pub(crate) async fn init_gpu_core(
     });
 
     let vertex_attrs = [
-        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x3, offset: 0, shader_location: 0 },
+        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x3, offset: 0,  shader_location: 0 },
         wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x2, offset: 12, shader_location: 1 },
         wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x2, offset: 20, shader_location: 2 },
+        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 28, shader_location: 3 },
     ];
 
     let geo_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
