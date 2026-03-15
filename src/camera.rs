@@ -1,6 +1,12 @@
 use glam::{Mat4, Vec3};
 use std::time::Instant;
 
+/// Approximate BSP map units per waypoint segment. Used to convert camera speed
+/// (units/sec) into a normalized spline parameter increment per frame.
+/// GoldSrc maps use Quake-style units; 256 units is a reasonable average inter-waypoint
+/// distance for de_dust2 spawn/bombsite positions.
+const MAP_UNIT_SCALE: f32 = 256.0;
+
 pub struct Camera {
     waypoints: Vec<Vec3>,  // sorted by nearest-neighbor
     t: f32,                // spline parameter, 0.0..1.0 over full loop
@@ -34,7 +40,7 @@ impl Camera {
     /// Advance the spline parameter and return the view matrix.
     pub fn update(&mut self, delta_secs: f32) -> Mat4 {
         let n = self.waypoints.len() as f32;
-        self.t = (self.t + self.speed * delta_secs / (n * 256.0)) % 1.0;
+        self.t = (self.t + self.speed * delta_secs / (n * MAP_UNIT_SCALE)) % 1.0;
 
         let pos = catmull_rom_position(&self.waypoints, self.t);
         let forward = catmull_rom_tangent(&self.waypoints, self.t).normalize_or_zero();
