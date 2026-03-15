@@ -47,6 +47,10 @@ struct App {
     gpu: Option<GpuState>,
     last_frame: std::time::Instant,
     shutdown: bool,
+    /// Ignore mouse exit events until this instant. Fullscreen transitions generate
+    /// synthetic large mouse deltas as the OS repositions the cursor — this grace
+    /// period prevents an immediate exit on startup.
+    mouse_grace_until: std::time::Instant,
 }
 
 impl App {
@@ -57,6 +61,7 @@ impl App {
             gpu: None,
             last_frame: std::time::Instant::now(),
             shutdown: false,
+            mouse_grace_until: std::time::Instant::now(), // reset in resumed()
         }
     }
 }
@@ -76,6 +81,11 @@ impl ApplicationHandler for App {
         let mesh = self.mesh.take().expect("mesh already consumed");
         let gpu = pollster::block_on(init_gpu(window, mesh)).expect("GPU init failed");
         self.gpu = Some(gpu);
+        // Start grace period now — after GPU init — so the fullscreen transition's
+        // synthetic mouse events don't immediately exit the screensaver.
+        self.mouse_grace_until =
+            std::time::Instant::now() + std::time::Duration::from_millis(1000);
+        crate::diag!("[cs-flythrough] resumed: GPU ready, grace until +1000ms");
     }
 
     fn window_event(
@@ -85,11 +95,22 @@ impl ApplicationHandler for App {
         event: WindowEvent,
     ) {
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
-            WindowEvent::KeyboardInput { .. } => {
-                self.shutdown = true;
+            WindowEvent::CloseRequested => {
+                crate::diag!("[cs-flythrough] event: CloseRequested -> exiting");
+                event_loop.exit();
+            }
+            WindowEvent::KeyboardInput { event: ref ke, is_synthetic, .. } => {
+                crate::diag!("[cs-flythrough] event: KeyboardInput synthetic={is_synthetic} state={:?}", ke.state);
+                // Ignore synthetic events and any input during the grace period
+                // (Windows forwards held keys to newly-focused windows).
+                let in_grace = std::time::Instant::now() < self.mouse_grace_until;
+                if !is_synthetic && !in_grace && ke.state == winit::event::ElementState::Pressed {
+                    crate::diag!("[cs-flythrough] KeyboardInput: real keypress -> shutdown");
+                    self.shutdown = true;
+                }
             }
             WindowEvent::Resized(new_size) => {
+                crate::diag!("[cs-flythrough] event: Resized {}x{}", new_size.width, new_size.height);
                 if let Some(gpu) = &mut self.gpu {
                     gpu.config.width = new_size.width;
                     gpu.config.height = new_size.height;
@@ -102,6 +123,7 @@ impl ApplicationHandler for App {
             }
             WindowEvent::RedrawRequested => {
                 if self.shutdown {
+                    crate::diag!("[cs-flythrough] RedrawRequested: shutdown=true -> exiting");
                     event_loop.exit();
                     return;
                 }
@@ -118,6 +140,7 @@ impl ApplicationHandler for App {
                 // CS 1.6 uses 90° horizontal FOV. perspective_rh takes vertical FOV,
                 // so derive fov_y from fov_x: fov_y = 2 * atan(tan(fov_x/2) / aspect).
                 // tan(90°/2) = tan(45°) = 1.0, simplifying to: fov_y = 2 * atan(1/aspect).
+                // glam 0.32 perspective_rh outputs depth [0,1] (wgpu/Vulkan convention).
                 let fov_y = 2.0 * (1.0_f32 / aspect).atan();
                 let proj = Mat4::perspective_rh(fov_y, aspect, 4.0, 4096.0);
                 let vp: [[f32; 4]; 4] = (proj * view).to_cols_array_2d();
@@ -200,8 +223,12 @@ impl ApplicationHandler for App {
         event: DeviceEvent,
     ) {
         if let DeviceEvent::MouseMotion { delta } = event {
-            if should_exit_on_mouse(delta) {
+            let grace_remaining = self.mouse_grace_until.saturating_duration_since(std::time::Instant::now());
+            if grace_remaining.is_zero() && should_exit_on_mouse(delta) {
+                crate::diag!("[cs-flythrough] MouseMotion delta={:?} -> shutdown", delta);
                 self.shutdown = true;
+            } else if !grace_remaining.is_zero() {
+                crate::diag!("[cs-flythrough] MouseMotion delta={:?} grace={}ms (ignored)", delta, grace_remaining.as_millis());
             }
         }
     }
@@ -241,7 +268,7 @@ async fn init_gpu(window: Arc<Window>, mesh: MeshData) -> Result<GpuState> {
         format: surface_format,
         width: size.width.max(1),
         height: size.height.max(1),
-        present_mode: wgpu::PresentMode::AutoVsync,
+        present_mode: wgpu::PresentMode::Fifo,
         alpha_mode: caps.alpha_modes[0],
         view_formats: vec![],
         desired_maximum_frame_latency: 2,
@@ -262,6 +289,10 @@ async fn init_gpu(window: Arc<Window>, mesh: MeshData) -> Result<GpuState> {
     let geo_index_count = mesh.sky_index_offset;
     let sky_index_count = mesh.indices.len() as u32 - mesh.sky_index_offset;
     let sky_index_offset = mesh.sky_index_offset;
+
+    crate::diag!("[cs-flythrough] surface: {:?}  size: {}x{}", surface_format, config.width, config.height);
+    crate::diag!("[cs-flythrough] vertices: {}  geo_indices: {}  sky_indices: {}", mesh.vertices.len(), geo_index_count, sky_index_count);
+    crate::diag!("[cs-flythrough] diffuse atlas: {}x{}  lightmap atlas: {}x{}", mesh.diffuse_atlas.width(), mesh.diffuse_atlas.height(), mesh.lightmap_atlas.width(), mesh.lightmap_atlas.height());
 
     let diffuse_tex = upload_rgba_texture(&device, &queue, &mesh.diffuse_atlas, "diffuse");
     let lightmap_tex =

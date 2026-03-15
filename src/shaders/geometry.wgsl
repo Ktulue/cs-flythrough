@@ -30,5 +30,8 @@ fn vs_main(in: VertexInput) -> VertexOutput {
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let diffuse = textureSample(diffuse_tex, diffuse_sampler, in.diffuse_uv);
     let lightmap = textureSample(lightmap_tex, lightmap_sampler, in.lightmap_uv);
-    return diffuse * lightmap;
+    // GoldSrc lightmaps are stored at ~1/4 of display brightness.
+    // Scale by 4 and add a small ambient floor so geometry is visible.
+    let lit = clamp(lightmap.rgb * 4.0 + vec3<f32>(0.05), vec3<f32>(0.0), vec3<f32>(1.0));
+    return vec4<f32>(diffuse.rgb * lit, 1.0);
 }

@@ -8,25 +8,20 @@ use std::time::Instant;
 const MAP_UNIT_SCALE: f32 = 256.0;
 
 pub struct Camera {
-    waypoints: Vec<Vec3>,  // sorted by nearest-neighbor
+    waypoints: Vec<Vec3>,  // in the order given (caller is responsible for ordering)
     t: f32,                // spline parameter, 0.0..1.0 over full loop
     speed: f32,            // units/sec
     bob_amplitude: f32,
     bob_frequency: f32,
     start_time: Instant,
+    first_update: bool,
 }
 
 impl Camera {
-    /// Create a camera from unsorted entity origins.
-    /// Returns Err if fewer than 4 origins are provided.
-    pub fn new(
-        origins: Vec<Vec3>,
-        speed: f32,
-        bob_amplitude: f32,
-        bob_frequency: f32,
-    ) -> anyhow::Result<Self> {
-        anyhow::ensure!(origins.len() >= 4, "need at least 4 waypoints, got {}", origins.len());
-        let waypoints = nearest_neighbor_sort(origins);
+    /// Create a camera from pre-ordered waypoints.
+    /// Returns Err if fewer than 4 waypoints are provided.
+    pub fn new(waypoints: Vec<Vec3>, speed: f32, bob_amplitude: f32, bob_frequency: f32) -> anyhow::Result<Self> {
+        anyhow::ensure!(waypoints.len() >= 4, "need at least 4 waypoints, got {}", waypoints.len());
         Ok(Self {
             waypoints,
             t: 0.0,
@@ -34,6 +29,7 @@ impl Camera {
             bob_amplitude,
             bob_frequency,
             start_time: Instant::now(),
+            first_update: true,
         })
     }
 
@@ -44,6 +40,11 @@ impl Camera {
 
         let pos = catmull_rom_position(&self.waypoints, self.t);
         let forward = catmull_rom_tangent(&self.waypoints, self.t).normalize_or_zero();
+
+        if self.first_update {
+            self.first_update = false;
+            crate::diag!("[cs-flythrough] camera pos: {:?}  forward: {:?}  t={:.4}  waypoints: {}", pos, forward, self.t, self.waypoints.len());
+        }
         let elapsed = self.start_time.elapsed().as_secs_f32();
         let bob = self.bob_amplitude * (elapsed * self.bob_frequency * std::f32::consts::TAU).sin();
 
@@ -57,7 +58,8 @@ impl Camera {
 }
 
 /// Sort waypoints using nearest-neighbor starting from index 0.
-fn nearest_neighbor_sort(mut pts: Vec<Vec3>) -> Vec<Vec3> {
+/// Used by main.rs for entity-origin fallback paths.
+pub fn nearest_neighbor_sort(mut pts: Vec<Vec3>) -> Vec<Vec3> {
     if pts.is_empty() { return pts; }
     let mut sorted = Vec::with_capacity(pts.len());
     sorted.push(pts.remove(0));

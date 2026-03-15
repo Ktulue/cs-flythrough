@@ -7,8 +7,16 @@ mod bsp;
 mod camera;
 mod renderer;
 mod input;
+pub mod log;
 
 fn main() {
+    // Initialize log file next to the exe so double-click runs produce readable output.
+    let log_path = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|p| p.join("cs-flythrough-debug.log")))
+        .unwrap_or_else(|| std::path::PathBuf::from("cs-flythrough-debug.log"));
+    log::init(&log_path);
+
     let args: Vec<String> = std::env::args().collect();
     let mode = args.get(1).map(|s| s.as_str()).unwrap_or("/s");
 
@@ -82,8 +90,26 @@ fn run_screensaver() -> Result<()> {
         }
     };
 
+    // Try NAV file for natural player-path waypoints; fall back to entity origins.
+    let nav_path = bsp_path.with_extension("nav");
+    let waypoints = if nav_path.exists() {
+        match bsp::nav::load_waypoints(&nav_path) {
+            Ok(pts) => {
+                eprintln!("cs-flythrough: using {} NAV waypoints from {}", pts.len(), nav_path.display());
+                pts  // already DFS-ordered
+            }
+            Err(e) => {
+                eprintln!("cs-flythrough: NAV load failed ({e:#}), falling back to entity origins");
+                camera::nearest_neighbor_sort(mesh.entity_origins.clone())
+            }
+        }
+    } else {
+        eprintln!("cs-flythrough: no NAV file at {}, using entity origins", nav_path.display());
+        camera::nearest_neighbor_sort(mesh.entity_origins.clone())
+    };
+
     let cam = camera::Camera::new(
-        mesh.entity_origins.clone(),
+        waypoints,
         cfg.camera_speed,
         cfg.bob_amplitude,
         cfg.bob_frequency,

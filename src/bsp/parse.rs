@@ -88,6 +88,7 @@ fn resolve_wad_paths(wad_value: &str, cs_install_path: &Path) -> Vec<std::path::
     let search_dirs = [
         cs_install_path.join("cstrike"),
         cs_install_path.join("czero"),
+        cs_install_path.join("valve"),   // halflife.wad, decals, shared textures
     ];
 
     let mut result = Vec::new();
@@ -208,6 +209,31 @@ pub fn load(bsp_path: &Path, cs_install_path: &Path) -> Result<MeshData> {
         resolve_wad_paths(wad_value, cs_install_path)
     } else {
         Vec::new()
+    };
+
+    // Also scan cstrike/ and valve/ for any WADs not listed in worldspawn.
+    // This catches halflife.wad, decals.wad, and other shared texture sources.
+    let wad_paths = {
+        let mut paths = wad_paths;
+        let scan_dirs = [
+            cs_install_path.join("cstrike"),
+            cs_install_path.join("valve"),
+        ];
+        for dir in &scan_dirs {
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    let p = entry.path();
+                    if p.extension().and_then(|e| e.to_str())
+                        .map(|e| e.eq_ignore_ascii_case("wad"))
+                        .unwrap_or(false)
+                        && !paths.contains(&p)
+                    {
+                        paths.push(p);
+                    }
+                }
+            }
+        }
+        paths
     };
 
     // ── 4. Collect texture names from BSP texture lump ───────────────────────
