@@ -14,3 +14,7 @@ map-compatibility.toml
 # Windows
 Thumbs.db
 desktop.ini
+
+# Generated artifacts
+captures/
+bug-report.json
