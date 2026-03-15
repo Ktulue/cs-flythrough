@@ -26,9 +26,13 @@ pub fn run(args: HeadlessArgs, cfg: Config) -> Result<()> {
 }
 
 async fn run_async(args: HeadlessArgs, cfg: Config) -> Result<()> {
-    // Validate frame_count
+    // Validate frame_count and frame_step
     if args.frame_count == 0 {
         capture::print_error_json("frame-count must be at least 1");
+        std::process::exit(1);
+    }
+    if args.frame_step == 0 {
+        capture::print_error_json("frame-step must be at least 1");
         std::process::exit(1);
     }
 

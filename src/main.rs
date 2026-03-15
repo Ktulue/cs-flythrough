@@ -217,6 +217,13 @@ mod tests {
     }
 
     #[test]
+    fn test_headless_args_frame_step_zero_passes_parsing() {
+        // Validation of frame_step=0 is done in headless::run, not the parser
+        let args = parse_headless_args(&["--frame-step".into(), "0".into()]).unwrap();
+        assert_eq!(args.frame_step, 0);
+    }
+
+    #[test]
     fn test_headless_args_unknown_flag_errors() {
         assert!(parse_headless_args(&["--bogus".into()]).is_err());
     }
