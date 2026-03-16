@@ -11,6 +11,19 @@ pub struct Config {
     pub camera_speed: f32,
     pub bob_amplitude: f32,
     pub bob_frequency: f32,
+    /// Hand-designed waypoint routes per map. When a route exists for the current
+    /// map it takes priority over the NAV file and entity-origin fallback.
+    #[serde(default)]
+    pub routes: Vec<CustomRoute>,
+}
+
+/// A hand-designed camera path for a specific map.
+/// Each waypoint is [x, y, z] in BSP world coordinates.
+/// The camera follows a closed Catmull-Rom spline through the points.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CustomRoute {
+    pub map: String,
+    pub waypoints: Vec<[f32; 3]>,
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
@@ -22,6 +35,11 @@ pub enum MapSelection {
 }
 
 impl Config {
+    /// Return the custom route for `map_name` if one exists.
+    pub fn find_route(&self, map_name: &str) -> Option<&CustomRoute> {
+        self.routes.iter().find(|r| r.map == map_name)
+    }
+
     pub fn load(path: &Path) -> Result<Self> {
         let text = std::fs::read_to_string(path)
             .with_context(|| format!("reading config at {}", path.display()))?;
@@ -82,5 +100,44 @@ bob_frequency = 2.0
         Config::write_default(&path).unwrap();
         let cfg = Config::load(&path).unwrap();
         assert_eq!(cfg.map_selection, MapSelection::Single);
+    }
+
+    #[test]
+    fn test_custom_route_round_trips() {
+        let f = write_temp(r#"
+cs_install_path = "C:/games/cstrike"
+map_selection = "single"
+map = "de_dust2"
+camera_speed = 133.0
+bob_amplitude = 2.0
+bob_frequency = 2.0
+
+[[routes]]
+map = "de_dust2"
+waypoints = [
+    [-512.0, 128.0, 64.0],
+    [100.0, 200.0, 64.0],
+    [300.0, -50.0, 64.0],
+    [-100.0, -200.0, 64.0],
+]
+"#);
+        let cfg = Config::load(f.path()).unwrap();
+        let route = cfg.find_route("de_dust2").expect("route not found");
+        assert_eq!(route.waypoints.len(), 4);
+        assert_eq!(route.waypoints[0], [-512.0, 128.0, 64.0]);
+    }
+
+    #[test]
+    fn test_no_route_returns_none() {
+        let f = write_temp(r#"
+cs_install_path = "C:/games/cstrike"
+map_selection = "single"
+map = "de_dust2"
+camera_speed = 133.0
+bob_amplitude = 2.0
+bob_frequency = 2.0
+"#);
+        let cfg = Config::load(f.path()).unwrap();
+        assert!(cfg.find_route("de_dust2").is_none());
     }
 }
