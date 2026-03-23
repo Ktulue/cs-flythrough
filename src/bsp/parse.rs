@@ -14,6 +14,7 @@ use qbsp::{
     },
 };
 
+use crate::bsp::collision::{CollisionData, CollisionNode, CollisionPlane, LeafContents};
 use crate::bsp::wad::load_textures;
 
 /// GPU vertex — 44 bytes stride, 4 attributes:
@@ -173,8 +174,63 @@ fn style_data_to_rgba(data: &PerStyleLightmapData) -> RgbaImage {
     }
 }
 
+fn extract_collision_data(bsp: &BspData) -> CollisionData {
+    let planes: Vec<CollisionPlane> = bsp.planes.iter().map(|p| {
+        CollisionPlane {
+            normal: Vec3::new(p.normal.x, p.normal.y, p.normal.z),
+            dist: p.dist,
+        }
+    }).collect();
+
+    let nodes: Vec<CollisionNode> = bsp.nodes.iter().map(|n| {
+        let front = match *n.front {
+            qbsp::data::nodes::BspNodeRef::Node(i) => i as i32,
+            qbsp::data::nodes::BspNodeRef::Leaf(i) => -(i as i32) - 1,
+        };
+        let back = match *n.back {
+            qbsp::data::nodes::BspNodeRef::Node(i) => i as i32,
+            qbsp::data::nodes::BspNodeRef::Leaf(i) => -(i as i32) - 1,
+        };
+        CollisionNode { plane_idx: n.plane_idx, front, back }
+    }).collect();
+
+    // Determine leaf solid/empty from qbsp's BspLeafContentFlags.
+    // For BSP30 (GoldSrc), the raw leaf content i32 is the Quake signed constant:
+    //   CONTENTS_EMPTY = -1 = 0xFFFFFFFF, CONTENTS_SOLID = -2 = 0xFFFFFFFE, etc.
+    // qbsp reads this as u32 via from_bits_truncate so 0xFFFFFFFF (-1, EMPTY) has
+    // ALL bits set (including SOLID bit 0), while 0xFFFFFFFE (-2, SOLID) has bit 0 clear.
+    // This means contains(SOLID) is BACKWARDS for BSP30: it fires for EMPTY leaves.
+    //
+    // The correct check for BSP30: a leaf is solid if its raw bits do NOT have bit 0 set
+    // AND the value is a non-zero negative (i.e. the high bits indicate a valid content type).
+    // Equivalently: the leaf is solid iff `!contains(SOLID)` and `bits() != 0`.
+    //
+    // For BSP29/BSP2, qbsp properly converts via Bsp29LeafContents → BspLeafContentFlags
+    // so SOLID leaves have only the SOLID bit set (value = 1) and EMPTY leaves have no bits
+    // set (value = 0). In that case contains(SOLID) works correctly.
+    //
+    // We detect BSP30 by checking if any leaf raw value has the characteristic pattern of
+    // GoldSrc content values: high bits all 1s (values >= 0xFFFF0000).
+    let is_goldsrc_contents = bsp.leaves.iter().any(|l| l.contents.0.bits() >= 0xFFFF_0000);
+
+    let leaves: Vec<LeafContents> = bsp.leaves.iter().map(|l| {
+        let raw = l.contents.0.bits();
+        let is_solid = if is_goldsrc_contents {
+            // GoldSrc BSP30: bit 0 clear means solid (raw interpreted as i32 == -2).
+            // bit 0 set means empty (raw interpreted as i32 == -1) or other passable content.
+            raw & 1 == 0 && raw != 0
+        } else {
+            // BSP29/BSP2/BSP38: SOLID flag is bit 0, correctly set by qbsp's conversion.
+            l.contents.0.contains(qbsp::data::nodes::BspLeafContentFlags::SOLID)
+        };
+        if is_solid { LeafContents::Solid } else { LeafContents::Empty }
+    }).collect();
+
+    CollisionData { planes, nodes, leaves }
+}
+
 /// Load and parse a GoldSrc BSP file, returning a `MeshData` ready for GPU upload.
-pub fn load(bsp_path: &Path, cs_install_path: &Path) -> Result<MeshData> {
+pub fn load(bsp_path: &Path, cs_install_path: &Path) -> Result<(MeshData, CollisionData)> {
     // ── 1. Read and parse the BSP ────────────────────────────────────────────
     let bsp_bytes = std::fs::read(bsp_path)
         .with_context(|| format!("reading BSP file: {}", bsp_path.display()))?;
@@ -424,12 +480,14 @@ pub fn load(bsp_path: &Path, cs_install_path: &Path) -> Result<MeshData> {
         indices.push(idx + geo_vertex_count);
     }
 
-    Ok(MeshData {
+    let collision = extract_collision_data(&bsp);
+
+    Ok((MeshData {
         vertices,
         indices,
         sky_index_offset,
         diffuse_atlas: diffuse_atlas.image,
         lightmap_atlas,
         entity_origins,
-    })
+    }, collision))
 }

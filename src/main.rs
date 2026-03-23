@@ -10,6 +10,7 @@ mod input;
 pub mod log;
 mod capture;
 mod headless;
+mod recording;
 
 fn parse_headless_args(args: &[String]) -> Result<headless::HeadlessArgs, String> {
     let mut result = headless::HeadlessArgs {
@@ -93,6 +94,111 @@ fn main() {
     log::init(&log_path);
 
     let raw_args: Vec<String> = std::env::args().collect();
+
+    // Recording mode — `--record-route` opens a windowed free-fly camera
+    if raw_args.iter().any(|a| a == "--record-route") {
+        let flags: Vec<String> = raw_args[1..]
+            .iter()
+            .filter(|a| a.as_str() != "--record-route")
+            .cloned()
+            .collect();
+
+        let mut rec_map: Option<String> = None;
+        let mut rec_camera_pos: Option<[f32; 3]> = None;
+        let mut i = 0;
+        while i < flags.len() {
+            match flags[i].as_str() {
+                "--map" => {
+                    i += 1;
+                    rec_map = Some(
+                        flags
+                            .get(i)
+                            .unwrap_or_else(|| {
+                                eprintln!("--map requires a map name");
+                                std::process::exit(1);
+                            })
+                            .clone(),
+                    );
+                }
+                "--camera-pos" => {
+                    i += 1;
+                    let s = flags.get(i).unwrap_or_else(|| {
+                        eprintln!("--camera-pos requires x,y,z");
+                        std::process::exit(1);
+                    });
+                    let parts: Vec<f32> = s
+                        .split(',')
+                        .map(|p| {
+                            p.trim().parse::<f32>().unwrap_or_else(|_| {
+                                eprintln!("invalid float in --camera-pos: '{p}'");
+                                std::process::exit(1);
+                            })
+                        })
+                        .collect();
+                    if parts.len() != 3 {
+                        eprintln!("--camera-pos requires exactly 3 values");
+                        std::process::exit(1);
+                    }
+                    rec_camera_pos = Some([parts[0], parts[1], parts[2]]);
+                }
+                other => {
+                    eprintln!("unknown --record-route flag: '{other}'");
+                    std::process::exit(1);
+                }
+            }
+            i += 1;
+        }
+
+        let binary_dir = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+            .unwrap_or_else(|| Path::new(".").to_path_buf());
+        let config_path = binary_dir.join("cs-flythrough.toml");
+
+        let cfg = if config_path.exists() {
+            match config::Config::load(&config_path) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("failed to load config: {e:#}");
+                    std::process::exit(1);
+                }
+            }
+        } else {
+            eprintln!("cs-flythrough.toml not found — run without flags first to generate it");
+            std::process::exit(1);
+        };
+
+        let map_name = rec_map
+            .or_else(|| cfg.map.clone())
+            .unwrap_or_else(|| "de_dust2".to_string());
+
+        let bsp_path = match maplist::resolve_bsp(&cfg.cs_install_path, &map_name) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("cannot find BSP for '{map_name}': {e:#}");
+                std::process::exit(1);
+            }
+        };
+
+        let (mesh, collision) = match bsp::load(&bsp_path, &cfg.cs_install_path) {
+            Ok(m) => m,
+            Err(e) => {
+                eprintln!("BSP load failed: {e:#}");
+                std::process::exit(1);
+            }
+        };
+
+        let args = recording::RecordingArgs {
+            map_name,
+            start_pos: rec_camera_pos,
+        };
+
+        if let Err(e) = recording::run(args, mesh, collision, cfg.camera_speed) {
+            eprintln!("recording error: {e:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
 
     // Headless mode — checked before Windows screensaver convention
     if raw_args.iter().any(|a| a == "--headless") {
@@ -279,7 +385,7 @@ fn run_screensaver() -> Result<()> {
 
     let bsp_path = maplist::resolve_bsp(&cfg.cs_install_path, map_name)?;
 
-    let mesh = match bsp::load(&bsp_path, &cfg.cs_install_path) {
+    let (mesh, collision) = match bsp::load(&bsp_path, &cfg.cs_install_path) {
         Ok(m) => {
             compat.set_ok(map_name);
             compat.save(&compat_path)?;
@@ -320,6 +426,7 @@ fn run_screensaver() -> Result<()> {
         cfg.camera_speed,
         cfg.bob_amplitude,
         cfg.bob_frequency,
+        Some(collision),
     )?;
 
     renderer::run(mesh, cam)

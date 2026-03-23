@@ -1,6 +1,8 @@
 use glam::{Mat4, Vec3};
 use std::time::Instant;
 
+use crate::bsp::collision::{CollisionData, resolve_position};
+
 /// Approximate BSP map units per waypoint segment. Used to convert camera speed
 /// (units/sec) into a normalized spline parameter increment per frame.
 /// GoldSrc maps use Quake-style units; 256 units is a reasonable average inter-waypoint
@@ -25,12 +27,20 @@ pub struct Camera {
     bob_frequency: f32,
     start_time: Instant,
     first_update: bool,
+    collision: Option<CollisionData>,
+    last_eye: Option<Vec3>,
 }
 
 impl Camera {
     /// Create a camera from pre-ordered waypoints.
     /// Returns Err if fewer than 4 waypoints are provided.
-    pub fn new(waypoints: Vec<Vec3>, speed: f32, bob_amplitude: f32, bob_frequency: f32) -> anyhow::Result<Self> {
+    pub fn new(
+        waypoints: Vec<Vec3>,
+        speed: f32,
+        bob_amplitude: f32,
+        bob_frequency: f32,
+        collision: Option<CollisionData>,
+    ) -> anyhow::Result<Self> {
         anyhow::ensure!(waypoints.len() >= 4, "need at least 4 waypoints, got {}", waypoints.len());
         Ok(Self {
             waypoints,
@@ -40,6 +50,8 @@ impl Camera {
             bob_frequency,
             start_time: Instant::now(),
             first_update: true,
+            collision,
+            last_eye: None,
         })
     }
 
@@ -67,6 +79,12 @@ impl Camera {
         let bob = self.bob_amplitude * (elapsed * self.bob_frequency * std::f32::consts::TAU).sin();
 
         let eye = pos + Vec3::new(0.0, 0.0, 64.0 + bob);
+        let eye = if let (Some(ref coll), Some(prev)) = (&self.collision, self.last_eye) {
+            resolve_position(coll, prev, eye)
+        } else {
+            eye
+        };
+        self.last_eye = Some(eye);
         let target = eye + forward;
         let up = Vec3::Z;
 
@@ -233,9 +251,9 @@ mod tests {
 
     #[test]
     fn test_new_requires_four_points() {
-        assert!(Camera::new(vec![], 133.0, 2.0, 2.0).is_err());
-        assert!(Camera::new(vec![Vec3::ZERO; 3], 133.0, 2.0, 2.0).is_err());
-        assert!(Camera::new(four_square_pts(), 133.0, 2.0, 2.0).is_ok());
+        assert!(Camera::new(vec![], 133.0, 2.0, 2.0, None).is_err());
+        assert!(Camera::new(vec![Vec3::ZERO; 3], 133.0, 2.0, 2.0, None).is_err());
+        assert!(Camera::new(four_square_pts(), 133.0, 2.0, 2.0, None).is_ok());
     }
 
     #[test]
@@ -317,7 +335,7 @@ mod tests {
 
     #[test]
     fn test_update_returns_pose_with_view() {
-        let mut cam = Camera::new(four_square_pts(), 133.0, 2.0, 2.0).unwrap();
+        let mut cam = Camera::new(four_square_pts(), 133.0, 2.0, 2.0, None).unwrap();
         let pose = cam.update(0.016);
         assert_ne!(pose.view, Mat4::IDENTITY);
     }
@@ -325,14 +343,14 @@ mod tests {
     #[test]
     fn test_update_pose_eye_is_above_waypoint() {
         // bob_amplitude=0 so no bob; eye should be exactly 64 units above waypoint Z
-        let mut cam = Camera::new(four_square_pts(), 133.0, 0.0, 0.0).unwrap();
+        let mut cam = Camera::new(four_square_pts(), 133.0, 0.0, 0.0, None).unwrap();
         let pose = cam.update(0.0);
         assert!(pose.eye.z > 60.0, "eye z={} expected >60", pose.eye.z);
     }
 
     #[test]
     fn test_update_pose_yaw_pitch_finite() {
-        let mut cam = Camera::new(four_square_pts(), 133.0, 2.0, 2.0).unwrap();
+        let mut cam = Camera::new(four_square_pts(), 133.0, 2.0, 2.0, None).unwrap();
         let pose = cam.update(0.016);
         assert!(pose.yaw.is_finite());
         assert!(pose.pitch.is_finite());
