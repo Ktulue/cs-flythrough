@@ -17,4 +17,10 @@ desktop.ini
 
 # Generated artifacts
 captures/
+captures_dbg/
+captures_test/
 bug-report.json
+
+# Local tool config (machine-specific)
+.cargo/
+.claude/

@@ -59,7 +59,7 @@ async fn run_async(args: HeadlessArgs, cfg: Config) -> Result<()> {
         e
     })?;
 
-    let mesh = bsp::load(&bsp_path, &cfg.cs_install_path).map_err(|e| {
+    let (mesh, collision) = bsp::load(&bsp_path, &cfg.cs_install_path).map_err(|e| {
         capture::print_error_json(&format!("failed to load map '{map_name}': {e:#}"));
         e
     })?;
@@ -92,7 +92,7 @@ async fn run_async(args: HeadlessArgs, cfg: Config) -> Result<()> {
         };
         let n = waypoints.len();
         Some(
-            Camera::new(waypoints, cfg.camera_speed, cfg.bob_amplitude, cfg.bob_frequency)
+            Camera::new(waypoints, cfg.camera_speed, cfg.bob_amplitude, cfg.bob_frequency, Some(collision))
                 .map_err(|_| {
                     let msg = format!(
                         "not enough waypoints for spline camera: need >= 4, got {n}"
